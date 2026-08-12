@@ -63,6 +63,10 @@ Never leave the scheme with an instance.
   `Claude Safe Storage` keychain key, so an archive restored on another Mac will
   not be logged in. They also contain live session cookies — never commit them
   or copy them to shared storage.
+- **A removed instance can linger.** `cdesk remove` quits it, drops its Dock
+  tile and unregisters it from LaunchServices — if you delete a bundle by hand
+  instead, the Dock keeps a tile pointing at nothing and LaunchServices may keep
+  it as the preferred `claude://` handler. `cdesk claim main` resets that.
 - **`cdesk sync` replaces the bundle under a running instance.** Quit it first
   if it is mid-conversation.
 - **Instances are ad-hoc signed** and therefore not notarized. macOS asks once

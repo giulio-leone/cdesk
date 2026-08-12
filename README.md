@@ -56,7 +56,7 @@ only create instances for the *extra* ones.
 | `cdesk autosync on\|off` | LaunchAgent that syncs when Claude.app updates |
 | `cdesk backup <name>...` | archive a profile, i.e. its login |
 | `cdesk restore <name> [file]` | put a profile back from the newest backup |
-| `cdesk remove <name> [--purge]` | delete the app; `--purge` also drops its login |
+| `cdesk remove <name> [--purge]` | delete the app, its Dock tile and its LaunchServices registration; `--purge` also drops its login |
 
 ### The config file
 

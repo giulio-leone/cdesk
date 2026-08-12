@@ -432,9 +432,43 @@ EOF
   esac
 }
 
+# Deleting the bundle is not enough: LaunchServices keeps the registration and
+# the Dock keeps the tile, so a removed instance lingers on screen pointing at
+# nothing.
+forget_bundle() {
+  local bundle="$1" id="$2"
+  "$LSREG" -u "$bundle" >/dev/null 2>&1 || true
+  python3 - "$id" <<'PY' || return 0
+import plistlib, subprocess, sys
+wanted = sys.argv[1]
+raw = subprocess.run(["defaults", "export", "com.apple.dock", "-"],
+                     capture_output=True).stdout
+if not raw:
+    sys.exit(0)
+dock = plistlib.loads(raw)
+changed = False
+for key in ("persistent-apps", "recent-apps"):
+    tiles = dock.get(key)
+    if not tiles:
+        continue
+    kept = [t for t in tiles
+            if t.get("tile-data", {}).get("bundle-identifier") != wanted]
+    if len(kept) != len(tiles):
+        dock[key] = kept
+        changed = True
+if changed:
+    subprocess.run(["defaults", "import", "com.apple.dock", "-"],
+                   input=plistlib.dumps(dock))
+    subprocess.run(["killall", "Dock"])
+PY
+}
+
 cmd_remove() {
   local name="$1" purge="${2:-}" slug bundle
   slug="$(slug_of "$name")"; bundle="$(bundle_of "$name")"
+  pkill -f -- "--user-data-dir=$PROFILES/$slug" 2>/dev/null || true
+  sleep 1                                    # let it flush before we delete
+  forget_bundle "$bundle" "com.anthropic.claudefordesktop.cdesk.$slug"
   rm -rf "$bundle"
   rm -f "$(marker_of "$name")"
   config_drop "$name"
