@@ -97,7 +97,7 @@ claude plugin install cdesk@cdesk
 
 That gives you the `cdesk` skill and a `/cdesk` command. The plugin cache is
 keyed by the version in `.claude-plugin/plugin.json` — bump it and run
-`claude plugin update cdesk` to ship a change.
+`claude plugin update cdesk@cdesk` to ship a change.
 
 ## Logging an instance in
 
