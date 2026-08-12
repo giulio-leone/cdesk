@@ -251,6 +251,22 @@ cmd_create() {
   build "$name" "${hex#\#}"
 }
 
+# Re-clone every instance that is behind the current Claude.app.
+cmd_sync() {
+  local cur v hex name n=0
+  cur="$(src_version)"
+  shopt -s nullglob
+  for bundle in "$APPS"/Claude\ *.app; do
+    is_instance "$bundle" || continue
+    name="$(name_of "$bundle")"
+    v="$(head -1 "$(marker_of "$name")")"
+    hex="$(sed -n 2p "$(marker_of "$name")")"
+    [ "$v" = "$cur" ] && continue
+    build "$name" "$hex" || { echo "sync: skipped $name" >&2; continue; }
+    n=$((n + 1))
+  done
+  echo "sync: $n rebuilt (Claude.app $cur)"
+}
 
 cmd_list() {
   local running cur v name mark
