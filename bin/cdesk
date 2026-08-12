@@ -1,0 +1,371 @@
+#!/bin/bash
+# cdesk - multiple Claude Desktop apps side by side, one account each.
+#
+# Each instance is an APFS-cloned Claude.app in ~/Applications with its own
+# bundle name, icon colour and baked-in --user-data-dir, so it gets a separate
+# Dock entry, a separate login and a separate history. Profiles and per-instance
+# state live in ~/.claude-desktop-profiles, outside the bundle, so a rebuild
+# never touches them and never breaks the bundle's code signature.
+#
+# /Applications/Claude.app stays untouched and is one of the accounts; you only
+# create an instance for each *additional* account. `cdesk sync` re-clones every
+# instance that is behind the freshly updated Claude.app, and the LaunchAgent
+# installed by `cdesk autosync on` runs it the moment Anthropic ships an update.
+
+set -euo pipefail
+
+SRC="${CLAUDE_APP:-/Applications/Claude.app}"
+PROFILES="${CDESK_PROFILES:-$HOME/.claude-desktop-profiles}"
+APPS="$HOME/Applications"
+AGENT="$HOME/Library/LaunchAgents/io.cdesk.cdesk-sync.plist"
+STATE="$PROFILES/.state"
+PB=/usr/libexec/PlistBuddy
+LSREG=/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister
+
+usage() {
+  cat <<'EOF'
+usage: cdesk <command> [args]
+
+  cdesk create <name> [#hex]   build "Claude <name>.app" with a tinted icon
+  cdesk run <name>             launch it
+  cdesk list                   instances, versions, running state, claude:// owner
+  cdesk sync                   rebuild every instance behind Claude.app (LaunchAgent runs this)
+  cdesk claim <name>|main      give claude:// (login + connector callbacks) to one app
+  cdesk autosync on|off        (un)install the LaunchAgent that syncs on update
+  cdesk remove <name>          delete the app; keeps the profile
+  cdesk remove <name> --purge  delete the app AND its login/history
+
+Only one app may own claude://. Clones are built without it so the main
+Claude.app keeps handling logins and connectors; `cdesk claim <name>` lends it
+to a clone while you log that clone in, `cdesk claim main` gives it back.
+
+Profiles: ~/.claude-desktop-profiles/<slug>   Apps: ~/Applications
+EOF
+}
+
+slug_of()   { printf '%s' "$1" | tr '[:upper:] ' '[:lower:]-' | tr -cd 'a-z0-9-'; }
+bundle_of() { printf '%s/Claude %s.app' "$APPS" "$1"; }
+marker_of() { printf '%s/%s' "$STATE" "$(slug_of "$1")"; }
+name_of()   { local n; n="$(basename "$1" .app)"; printf '%s' "${n#Claude }"; }
+src_version() { $PB -c "Print :CFBundleShortVersionString" "$SRC/Contents/Info.plist" 2>/dev/null; }
+is_instance() { [ -f "$(marker_of "$(name_of "$1")")" ]; }
+
+colour_for() {
+  local n; n=$(( $(printf '%s' "$1" | cksum | cut -d' ' -f1) % 6 ))
+  printf '%s' "3B82F6 10B981 8B5CF6 EF4444 F59E0B 06B6D4" | cut -d' ' -f$((n + 1))
+}
+
+# Recolour the icon by rotating its hue, keeping shape and shading intact.
+tint_icon() {
+  local bundle="$1" hex="$2" work
+  work="$(mktemp -d)"
+  python3 - "$SRC/Contents/Resources/electron.icns" "$work/icon.iconset" "$hex" <<'PY' || { rm -rf "$work"; return 0; }
+import colorsys, os, sys
+from PIL import Image
+
+src, out, hex_colour = sys.argv[1], sys.argv[2], sys.argv[3].lstrip("#")
+r, g, b = (int(hex_colour[i:i + 2], 16) / 255 for i in (0, 2, 4))
+target_h = int(colorsys.rgb_to_hsv(r, g, b)[0] * 255) % 256
+
+base = Image.open(src)
+sizes = base.info.get("sizes")
+if sizes:
+    base.size = max(sizes, key=lambda s: s[0])[:2]
+base.load()
+base = base.convert("RGBA")
+alpha = base.getchannel("A")
+
+# Constant hue, original saturation and value: coloured areas take the new hue,
+# greys stay grey because their saturation is already near zero.
+h, s, v = base.convert("RGB").convert("HSV").split()
+tinted = Image.merge("HSV", (h.point(lambda _: target_h), s, v)).convert("RGB")
+tinted.putalpha(alpha)
+
+os.makedirs(out, exist_ok=True)
+for size in (16, 32, 128, 256, 512):
+    tinted.resize((size, size), Image.LANCZOS).save(f"{out}/icon_{size}x{size}.png")
+    tinted.resize((size * 2, size * 2), Image.LANCZOS).save(f"{out}/icon_{size}x{size}@2x.png")
+PY
+  if [ -d "$work/icon.iconset" ]; then
+    iconutil -c icns "$work/icon.iconset" -o "$bundle/Contents/Resources/electron.icns" 2>/dev/null || true
+  fi
+  rm -rf "$work"
+}
+
+# url_claims <bundle> on|off — copy CFBundleURLTypes from Claude.app, or drop it.
+url_claims() {
+  python3 - "$1/Contents/Info.plist" "$2" "$SRC/Contents/Info.plist" <<'PY'
+import plistlib, sys
+target, mode, source = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(target, "rb") as fh:
+    data = plistlib.load(fh)
+if mode == "on":
+    with open(source, "rb") as fh:
+        data["CFBundleURLTypes"] = plistlib.load(fh).get("CFBundleURLTypes", [])
+else:
+    data.pop("CFBundleURLTypes", None)
+with open(target, "wb") as fh:
+    plistlib.dump(data, fh)
+PY
+}
+
+# macOS (Spotlight/XProtect) can still be walking a freshly written .app when we
+# try to delete it, and a failed rm makes the next cp nest the bundle inside
+# itself. Retry, then give up loudly rather than corrupting the tree.
+hard_rm() {
+  local p="$1" i
+  for i in 1 2 3 4 5; do
+    [ -e "$p" ] || return 0
+    rm -rf "$p" 2>/dev/null || true
+    [ -e "$p" ] || return 0
+    sleep 1
+  done
+  echo "could not remove $p" >&2
+  return 1
+}
+
+# `codesign --deep` is unreliable on nested frameworks (Apple deprecates it for
+# signing). Sign inside-out instead: nested bundles deepest-first, then loose
+# helper binaries, then the outer bundle.
+sign_bundle() {
+  local b="$1" p
+  # Frameworks are copied verbatim, so Anthropic's signature on them is still
+  # valid: leaving them alone keeps their APFS clone blocks shared with
+  # /Applications/Claude.app instead of dirtying ~200 MB per instance.
+  while IFS= read -r p; do
+    codesign --force --sign - "$p" 2>>/tmp/cdesk-codesign.err || return 1
+  done < <(find "$b/Contents" -type d -name '*.app' 2>/dev/null \
+             | awk '{n=gsub(/\//,"/"); print n"\t"$0}' | sort -rn | cut -f2-)
+  # CFBundleExecutable is our launcher shim, so codesign treats the real Electron
+  # binary next to it as a loose resource and would leave Anthropic's signature
+  # on it — which seals the original Info.plist and fails verification.
+  while IFS= read -r p; do
+    file -b "$p" | grep -q 'Mach-O' || continue
+    codesign --force --sign - "$p" 2>>/tmp/cdesk-codesign.err || return 1
+  done < <(find "$b/Contents/MacOS" "$b/Contents/Helpers" -maxdepth 1 -type f -perm -111 2>/dev/null)
+  codesign --force --sign - "$b" 2>>/tmp/cdesk-codesign.err
+}
+
+scheme_owner() {
+  local f; f="$(mktemp -d)/h.swift"
+  cat > "$f" <<'EOF'
+import AppKit
+if let u = URL(string: "claude://x"), let a = NSWorkspace.shared.urlForApplication(toOpen: u) {
+  print(a.path)
+}
+EOF
+  swift "$f" 2>/dev/null || echo "unknown"
+}
+
+set_scheme_owner() {
+  local f; f="$(mktemp -d)/s.swift"
+  cat > "$f" <<EOF
+import AppKit
+import CoreServices
+if let b = Bundle(path: "$1"), let id = b.bundleIdentifier {
+  LSSetDefaultHandlerForURLScheme("claude" as CFString, id as CFString)
+}
+EOF
+  swift "$f" 2>/dev/null || true
+}
+
+# Build into a staging bundle and swap it in, so a half-finished or still-busy
+# instance can never be copied into (which nests Claude.app inside itself).
+build() {
+  local name="$1" hex="$2" slug bundle stage stagedir disp
+  slug="$(slug_of "$name")"
+  bundle="$(bundle_of "$name")"
+  disp="Claude $name"
+
+  [ -d "$SRC" ] || { echo "not found: $SRC" >&2; return 1; }
+  mkdir -p "$APPS" "$STATE" "$PROFILES/$slug"
+
+  # Stage outside ~/Applications: a half-built .app there gets picked up by
+  # LaunchServices and Spotlight while we are still editing it.
+  stagedir="$(mktemp -d "$PROFILES/.build.XXXXXX")"
+  stage="$stagedir/$disp.app"
+  cp -Rc "$SRC" "$stage" 2>/dev/null || cp -R "$SRC" "$stage"
+
+  $PB -c "Set :CFBundleName $disp" "$stage/Contents/Info.plist"
+  $PB -c "Add :CFBundleDisplayName string $disp" "$stage/Contents/Info.plist" 2>/dev/null \
+    || $PB -c "Set :CFBundleDisplayName $disp" "$stage/Contents/Info.plist"
+  $PB -c "Set :CFBundleIdentifier com.anthropic.claudefordesktop.cdesk.$slug" "$stage/Contents/Info.plist"
+  $PB -c "Set :CFBundleExecutable $disp-launcher" "$stage/Contents/Info.plist"
+
+  # Electron resolves its helper bundles from CFBundleName, so they must follow.
+  local h base suffix newbase
+  for h in "$stage/Contents/Frameworks/"Claude*Helper*.app; do
+    [ -d "$h" ] || continue
+    base="$(basename "$h" .app)"
+    suffix="${base#Claude Helper}"
+    newbase="$disp Helper$suffix"
+    mv "$h/Contents/MacOS/$base" "$h/Contents/MacOS/$newbase"
+    $PB -c "Set :CFBundleExecutable $newbase" "$h/Contents/Info.plist"
+    $PB -c "Set :CFBundleName $newbase" "$h/Contents/Info.plist"
+    $PB -c "Set :CFBundleIdentifier com.anthropic.claudefordesktop.cdesk.$slug.helper$(printf '%s' "$suffix" | tr -d ' ()')" "$h/Contents/Info.plist" 2>/dev/null || true
+    mv "$h" "$(dirname "$h")/$newbase.app"
+  done
+
+  # The real binary keeps the display name so Activity Monitor shows it; the
+  # launcher shim is what LaunchServices starts, and it injects the profile.
+  mv "$stage/Contents/MacOS/Claude" "$stage/Contents/MacOS/$disp"
+  cat > "$stage/Contents/MacOS/$disp-launcher" <<EOF
+#!/bin/bash
+exec "\$(dirname "\$0")/$disp" --user-data-dir="$PROFILES/$slug" "\$@"
+EOF
+  chmod +x "$stage/Contents/MacOS/$disp-launcher"
+
+  [ -n "$hex" ] && tint_icon "$stage" "$hex"
+
+  # Only one app may own claude://. A clone that also claims it steals every
+  # OAuth and connector callback from the main app, which then fails silently.
+  url_claims "$stage" off
+
+  # --deep signing occasionally trips over a still-settling helper; one retry
+  # turns that transient into a no-op instead of a silently skipped instance.
+  local attempt signed=0
+  : > /tmp/cdesk-codesign.err
+  for attempt in 1 2 3; do
+    if sign_bundle "$stage" && codesign --verify --deep "$stage" 2>>/tmp/cdesk-codesign.err; then
+      signed=1; break
+    fi
+    sleep 1
+  done
+  if [ "$signed" -eq 0 ]; then
+    echo "codesign failed for $name: $(grep -v 'replacing existing signature' /tmp/cdesk-codesign.err | tail -1)" >&2
+    rm -rf "$stagedir"
+    return 1
+  fi
+
+  if ! hard_rm "$bundle"; then rm -rf "$stagedir"; return 1; fi
+  mv "$stage" "$bundle"
+  rm -rf "$stagedir"
+  printf '%s\n%s\n' "$(src_version)" "$hex" > "$(marker_of "$name")"
+  "$LSREG" -f "$bundle" >/dev/null 2>&1 || true
+  echo "built $bundle  (profile: $PROFILES/$slug)"
+}
+
+cmd_create() {
+  local name="$1" hex="${2:-}"
+  [ -n "$hex" ] || hex="$(colour_for "$name")"
+  build "$name" "${hex#\#}"
+}
+
+
+cmd_list() {
+  local running cur v name mark
+  cur="$(src_version)"
+  echo "Claude.app: $cur"
+  echo "claude:// : $(scheme_owner)"
+  running="$(ps -Ao command | grep -F -- '--user-data-dir=' || true)"
+  shopt -s nullglob
+  for bundle in "$APPS"/Claude\ *.app; do
+    is_instance "$bundle" || continue
+    name="$(name_of "$bundle")"
+    v="$(head -1 "$(marker_of "$name")")"
+    mark="  "
+    case "$running" in *"--user-data-dir=$PROFILES/$(slug_of "$name")"*) mark="● " ;; esac
+    printf '%s%-16s %s%s\n' "$mark" "$name" "$v" \
+      "$([ "$v" = "$cur" ] && echo "" || echo "   (stale -> cdesk sync)")"
+  done
+}
+
+cmd_run() {
+  local bundle; bundle="$(bundle_of "$1")"
+  [ -d "$bundle" ] || { echo "no such instance: $1 (cdesk create $1)" >&2; exit 1; }
+  open -n "$bundle"
+}
+
+# Hand claude:// to one app. Needed only while logging a clone in or adding a
+# connector to it; give it back to `main` afterwards.
+cmd_claim() {
+  local target="${1:-}" bundle
+  [ -n "$target" ] || { echo "usage: cdesk claim <name>|main" >&2; exit 1; }
+
+  shopt -s nullglob
+  for b in "$APPS"/Claude\ *.app; do
+    is_instance "$b" || continue
+    url_claims "$b" off
+    codesign --force --deep --sign - "$b" >/dev/null 2>&1 || true
+    "$LSREG" -f "$b" >/dev/null 2>&1 || true
+  done
+
+  if [ "$target" = "main" ]; then
+    bundle="$SRC"
+  else
+    bundle="$(bundle_of "$target")"
+    [ -d "$bundle" ] || { echo "no such instance: $target" >&2; exit 1; }
+    url_claims "$bundle" on
+    codesign --force --deep --sign - "$bundle" >/dev/null 2>&1 || true
+    "$LSREG" -f "$bundle" >/dev/null 2>&1 || true
+  fi
+  "$LSREG" -f "$SRC" >/dev/null 2>&1 || true
+  set_scheme_owner "$bundle"
+  echo "claude:// -> $(scheme_owner)"
+  [ "$target" = "main" ] || echo "when done:  cdesk claim main"
+}
+
+cmd_autosync() {
+  case "${1:-}" in
+    on)
+      mkdir -p "$(dirname "$AGENT")"
+      cat > "$AGENT" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>io.cdesk.cdesk-sync</string>
+  <key>ProgramArguments</key>
+  <array><string>$HOME/.local/bin/cdesk</string><string>sync</string></array>
+  <key>WatchPaths</key>
+  <array><string>$SRC/Contents/Info.plist</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>$HOME/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>StandardOutPath</key><string>$HOME/Library/Logs/cdesk-sync.log</string>
+  <key>StandardErrorPath</key><string>$HOME/Library/Logs/cdesk-sync.log</string>
+</dict>
+</plist>
+EOF
+      launchctl bootout "gui/$(id -u)/io.cdesk.cdesk-sync" 2>/dev/null || true
+      launchctl bootstrap "gui/$(id -u)" "$AGENT"
+      echo "autosync on (log: ~/Library/Logs/cdesk-sync.log)"
+      ;;
+    off)
+      launchctl bootout "gui/$(id -u)/io.cdesk.cdesk-sync" 2>/dev/null || true
+      rm -f "$AGENT"
+      echo "autosync off"
+      ;;
+    *) echo "usage: cdesk autosync on|off" >&2; exit 1 ;;
+  esac
+}
+
+cmd_remove() {
+  local name="$1" purge="${2:-}" slug bundle
+  slug="$(slug_of "$name")"; bundle="$(bundle_of "$name")"
+  rm -rf "$bundle"
+  rm -f "$(marker_of "$name")"
+  if [ "$purge" = "--purge" ]; then
+    rm -rf "${PROFILES:?}/$slug"
+    echo "removed '$name' and its profile"
+  else
+    echo "removed '$name' (profile kept at $PROFILES/$slug)"
+  fi
+}
+
+[ $# -ge 1 ] || { usage; exit 1; }
+case "$1" in
+  auto)      cmd_sync ;;
+  create)    shift; [ $# -ge 1 ] || { usage; exit 1; }; cmd_create "$@" ;;
+  run)       shift; [ $# -eq 1 ] || { usage; exit 1; }; cmd_run "$1" ;;
+  list|ls)   cmd_list ;;
+  sync)      cmd_sync ;;
+  claim)     shift; cmd_claim "${1:-}" ;;
+  autosync)  shift; cmd_autosync "${1:-}" ;;
+  remove|rm) shift; [ $# -ge 1 ] || { usage; exit 1; }; cmd_remove "$@" ;;
+  -h|--help|help) usage ;;
+  *)         usage; exit 1 ;;
+esac
