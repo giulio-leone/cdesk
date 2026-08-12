@@ -1,0 +1,11 @@
+{
+  "name": "cdesk",
+  "description": "Run several Claude Desktop apps side by side on macOS, one account each — cloned bundles with their own Dock entry, icon, login and history, kept in step with Claude.app.",
+  "version": "1.0.0",
+  "author": {
+    "name": "cdesk contributors",
+    "url": "https://example.invalid"
+  },
+  "homepage": "https://example.invalid/cdesk",
+  "license": "MIT"
+}

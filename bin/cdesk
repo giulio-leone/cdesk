@@ -19,6 +19,8 @@ PROFILES="${CDESK_PROFILES:-$HOME/.claude-desktop-profiles}"
 APPS="$HOME/Applications"
 AGENT="$HOME/Library/LaunchAgents/io.cdesk.cdesk-sync.plist"
 STATE="$PROFILES/.state"
+CONFIG="${CDESK_CONFIG:-$HOME/.config/cdesk/instances.conf}"
+BACKUPS="${CDESK_BACKUPS:-$HOME/.config/cdesk/backups}"
 PB=/usr/libexec/PlistBuddy
 LSREG=/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister
 
@@ -27,11 +29,14 @@ usage() {
 usage: cdesk <command> [args]
 
   cdesk create <name> [#hex]   build "Claude <name>.app" with a tinted icon
+  cdesk apply                  build everything listed in the config
   cdesk run <name>             launch it
   cdesk list                   instances, versions, running state, claude:// owner
   cdesk sync                   rebuild every instance behind Claude.app (LaunchAgent runs this)
   cdesk claim <name>|main      give claude:// (login + connector callbacks) to one app
   cdesk autosync on|off        (un)install the LaunchAgent that syncs on update
+  cdesk backup <name>...       archive a profile (its login) under ~/.config/cdesk
+  cdesk restore <name> [file]  put a profile back from the newest backup
   cdesk remove <name>          delete the app; keeps the profile
   cdesk remove <name> --purge  delete the app AND its login/history
 
@@ -39,6 +44,7 @@ Only one app may own claude://. Clones are built without it so the main
 Claude.app keeps handling logins and connectors; `cdesk claim <name>` lends it
 to a clone while you log that clone in, `cdesk claim main` gives it back.
 
+Config:   ~/.config/cdesk/instances.conf   (name<TAB>#hex, one per line)
 Profiles: ~/.claude-desktop-profiles/<slug>   Apps: ~/Applications
 EOF
 }
@@ -245,10 +251,77 @@ EOF
   echo "built $bundle  (profile: $PROFILES/$slug)"
 }
 
+# The declarative instance list. `cdesk apply` rebuilds a machine from it, so a
+# fresh Mac needs the repo and this one file — no re-configuring by hand.
+config_put() {
+  local name="$1" hex="$2"
+  mkdir -p "$(dirname "$CONFIG")"
+  touch "$CONFIG"
+  grep -viE "^$name[[:space:]]" "$CONFIG" > "$CONFIG.tmp" || true
+  printf '%s\t#%s\n' "$name" "${hex#\#}" >> "$CONFIG.tmp"
+  sort -f -o "$CONFIG" "$CONFIG.tmp" && rm -f "$CONFIG.tmp"
+}
+
+config_drop() {
+  [ -f "$CONFIG" ] || return 0
+  grep -viE "^$1[[:space:]]" "$CONFIG" > "$CONFIG.tmp" || true
+  mv "$CONFIG.tmp" "$CONFIG"
+}
+
 cmd_create() {
   local name="$1" hex="${2:-}"
   [ -n "$hex" ] || hex="$(colour_for "$name")"
   build "$name" "${hex#\#}"
+  config_put "$name" "$hex"
+}
+
+cmd_apply() {
+  local name hex made=0 kept=0 cur
+  [ -f "$CONFIG" ] || { echo "no config at $CONFIG"; return 0; }
+  cur="$(src_version)"
+  while IFS=$'\t' read -r name hex; do
+    [ -n "$name" ] || continue
+    case "$name" in \#*) continue ;; esac
+    local marker; marker="$(marker_of "$name")"
+    if [ -d "$(bundle_of "$name")" ] && [ -f "$marker" ] && [ "$(head -1 "$marker")" = "$cur" ]; then
+      kept=$((kept + 1)); continue
+    fi
+    build "$name" "${hex#\#}" || { echo "apply: skipped $name" >&2; continue; }
+    made=$((made + 1))
+  done < "$CONFIG"
+  echo "apply: $made built, $kept already current"
+}
+
+# A profile holds the logged-in session, so a backup means you do not have to log
+# in again after a rebuild or a reinstall. It stays tied to this Mac: the cookies
+# are encrypted with the local "Claude Safe Storage" keychain key.
+cmd_backup() {
+  local name slug out stamp
+  mkdir -p "$BACKUPS"; chmod 700 "$BACKUPS"
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  for name in "$@"; do
+    slug="$(slug_of "$name")"
+    [ -d "$PROFILES/$slug" ] || { echo "no profile for $name" >&2; continue; }
+    out="$BACKUPS/$slug-$stamp.tgz"
+    tar -czf "$out" -C "$PROFILES" "$slug"
+    chmod 600 "$out"
+    echo "backed up $name -> $out  ($(du -h "$out" | cut -f1))"
+  done
+  echo "these archives contain live session cookies — keep them off git and off shared drives"
+}
+
+cmd_restore() {
+  local name="$1" src="${2:-}" slug
+  slug="$(slug_of "$name")"
+  if [ -z "$src" ]; then
+    src="$(ls -t "$BACKUPS/$slug-"*.tgz 2>/dev/null | head -1 || true)"
+  fi
+  [ -n "$src" ] && [ -f "$src" ] || { echo "no backup found for $name in $BACKUPS" >&2; exit 1; }
+  pgrep -f -- "--user-data-dir=$PROFILES/$slug" >/dev/null 2>&1 \
+    && { echo "quit Claude $name first — its profile is in use" >&2; exit 1; }
+  rm -rf "${PROFILES:?}/$slug"
+  tar -xzf "$src" -C "$PROFILES"
+  echo "restored $name from $src"
 }
 
 # Re-clone every instance that is behind the current Claude.app.
@@ -364,6 +437,7 @@ cmd_remove() {
   slug="$(slug_of "$name")"; bundle="$(bundle_of "$name")"
   rm -rf "$bundle"
   rm -f "$(marker_of "$name")"
+  config_drop "$name"
   if [ "$purge" = "--purge" ]; then
     rm -rf "${PROFILES:?}/$slug"
     echo "removed '$name' and its profile"
@@ -375,6 +449,9 @@ cmd_remove() {
 [ $# -ge 1 ] || { usage; exit 1; }
 case "$1" in
   auto)      cmd_sync ;;
+  apply)     cmd_apply ;;
+  backup)    shift; [ $# -ge 1 ] || { usage; exit 1; }; cmd_backup "$@" ;;
+  restore)   shift; [ $# -ge 1 ] || { usage; exit 1; }; cmd_restore "$@" ;;
   create)    shift; [ $# -ge 1 ] || { usage; exit 1; }; cmd_create "$@" ;;
   run)       shift; [ $# -eq 1 ] || { usage; exit 1; }; cmd_run "$1" ;;
   list|ls)   cmd_list ;;

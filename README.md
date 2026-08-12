@@ -23,10 +23,14 @@ git clone https://example.invalid/cdesk.git
 cd cdesk && ./install.sh
 ```
 
-`install.sh` symlinks `bin/cdesk` into `~/.local/bin`. Requirements: macOS on
-APFS, Claude Desktop in `/Applications`, Xcode command line tools (`codesign`,
-`swift`), and `python3` with Pillow (only for the tinted icons — without it the
-instances still build, they just keep the stock icon).
+`install.sh` symlinks `bin/cdesk` into `~/.local/bin`, rebuilds whatever is
+listed in `~/.config/cdesk/instances.conf`, turns on the update LaunchAgent, and
+registers the Claude Code plugin. On a new machine that is the whole setup:
+clone, copy your `instances.conf` across, run it.
+
+Requirements: macOS on APFS, Claude Desktop in `/Applications`, Xcode command
+line tools (`codesign`, `swift`), and `python3` with Pillow (only for the tinted
+icons — without it instances still build, they just keep the stock icon).
 
 ## Use
 
@@ -44,12 +48,56 @@ only create instances for the *extra* ones.
 | command | what it does |
 | --- | --- |
 | `cdesk create <name> [#hex]` | build `~/Applications/Claude <name>.app` |
+| `cdesk apply` | build everything in `~/.config/cdesk/instances.conf` |
 | `cdesk run <name>` | launch it |
 | `cdesk list` | instances, versions, running state, `claude://` owner |
 | `cdesk sync` | rebuild every instance behind Claude.app |
 | `cdesk claim <name>\|main` | hand the `claude://` scheme to one app |
 | `cdesk autosync on\|off` | LaunchAgent that syncs when Claude.app updates |
+| `cdesk backup <name>...` | archive a profile, i.e. its login |
+| `cdesk restore <name> [file]` | put a profile back from the newest backup |
 | `cdesk remove <name> [--purge]` | delete the app; `--purge` also drops its login |
+
+### The config file
+
+`create`, `remove` and `apply` all maintain `~/.config/cdesk/instances.conf`:
+
+```
+Work	#EF4444
+Personal	#8B5CF6
+```
+
+One `name<TAB>#hex` per line. That file plus this repo is everything needed to
+rebuild a machine, so keep it somewhere you sync.
+
+### Auth profiles
+
+A profile directory holds the logged-in session, so it is worth keeping:
+
+```bash
+cdesk backup Personal            # -> ~/.config/cdesk/backups/personal-<stamp>.tgz
+cdesk restore Personal           # newest backup, or pass a specific file
+```
+
+Backups survive rebuilds and reinstalls **on the same Mac**. They are not
+portable: the cookies inside are encrypted with the local `Claude Safe Storage`
+keychain key, so a restore on another machine lands you logged out. They also
+contain live session cookies — keep them out of git and off shared drives.
+
+## Claude Code plugin
+
+The repo doubles as a Claude Code plugin, so any session knows how to drive
+`cdesk` and, more usefully, knows the `claude://` rule below before it starts
+debugging a login.
+
+```bash
+claude plugin marketplace add /path/to/cdesk
+claude plugin install cdesk@cdesk
+```
+
+That gives you the `cdesk` skill and a `/cdesk` command. The plugin cache is
+keyed by the version in `.claude-plugin/plugin.json` — bump it and run
+`claude plugin update cdesk` to ship a change.
 
 ## Logging an instance in
 
