@@ -51,9 +51,10 @@ only create instances for the *extra* ones.
 | `cdesk apply` | build everything in `~/.config/cdesk/instances.conf` |
 | `cdesk run <name>` | launch it |
 | `cdesk list` | instances, versions, running state, `claude://` owner |
-| `cdesk sync` | rebuild every instance behind Claude.app |
+| `cdesk sync` | update Claude.app, rebuild every instance behind it |
 | `cdesk claim <name>\|main` | hand the `claude://` scheme to one app |
-| `cdesk autosync on\|off` | LaunchAgent that syncs when Claude.app updates |
+| `cdesk main <name>` | run `<name>`'s profile in Claude.app itself and drop its clone |
+| `cdesk autosync on\|off` | LaunchAgent that syncs hourly and when Claude.app changes |
 | `cdesk backup <name>...` | archive a profile, i.e. its login |
 | `cdesk restore <name> [file]` | put a profile back from the newest backup |
 | `cdesk remove <name> [--purge]` | delete the app, its Dock tile and its LaunchServices registration; `--purge` also drops its login |
@@ -114,12 +115,32 @@ cdesk claim main     # hand claude:// back to /Applications/Claude.app
 If connectors ever stop working in the main app, `cdesk list` will show you who
 owns the scheme, and `cdesk claim main` fixes it.
 
+## Which account lives in Claude.app
+
+Only `/Applications/Claude.app` carries Anthropic's signature, and with it the
+keychain group that holds the hardware device key. A clone is signed ad hoc and
+cannot read that key, so its account never registers this Mac with claude.ai:
+the mobile and web apps answer "open the Claude desktop app on your computer
+first", and the log shows `[device-registry] enclave key unavailable`. One
+account can have it — the one in Claude.app:
+
+```bash
+cdesk main Personal   # quit Claude Personal and Claude.app first
+```
+
+That links Claude.app's data directory to the profile, removes the clone and
+gives `claude://` back to Claude.app. The data Claude.app had before is kept
+next to it as `Claude.<stamp>`.
+
 ## Updates
 
-Instances do not self-update: they are separate bundles. `cdesk sync` re-clones
-each one from the current `/Applications/Claude.app`, and `cdesk autosync on`
-installs a LaunchAgent that watches that bundle and runs `sync` the moment
-Anthropic ships an update. Profiles live in `~/.claude-desktop-profiles/<slug>`,
+Instances cannot self-update: Squirrel looks for the downloaded bundle under the
+instance's own identifier and fails on every check. `cdesk sync` therefore
+installs Anthropic's latest release into `/Applications/Claude.app` (only a
+notarized bundle signed by Anthropic's team, and only while Claude.app is not
+running — when it runs it updates itself), then re-clones every instance that is
+behind it. `cdesk autosync on` installs a LaunchAgent that runs `sync` hourly and
+whenever Claude.app changes. Profiles live in `~/.claude-desktop-profiles/<slug>`,
 outside the bundles, so rebuilds never touch your logins or history.
 
 ## How it works
@@ -153,8 +174,8 @@ Electron processes no matter how they are installed.
 
 - Instances are **ad-hoc signed**, so they are no longer notarized. macOS asks
   once for the `Claude Safe Storage` keychain item on first login.
-- `cdesk sync` replaces the bundle underneath a running instance — quit it first
-  if it is in the middle of something.
+- `cdesk sync` skips a running instance; the next hourly run rebuilds it once
+  you quit it.
 - Renaming an instance means `remove` + `create`; the profile is keyed by name.
 
 ## Claude Code

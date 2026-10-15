@@ -53,6 +53,17 @@ cdesk claim main
 
 Never leave the scheme with an instance.
 
+## "Open the Claude desktop app on your computer first"
+
+If claude.ai (mobile or web) says that while an instance is open, or the log has
+`[device-registry] enclave key unavailable`, the account runs in a clone. Clones
+are signed ad hoc and cannot read the hardware device key, so they never
+register this Mac. Only the account in `/Applications/Claude.app` can:
+
+```bash
+cdesk main <Name>    # both apps quit first; the clone is removed, the profile kept
+```
+
 ## Things that will bite you
 
 - **The first login of each instance is manual.** It goes through browser OAuth.
@@ -67,8 +78,9 @@ Never leave the scheme with an instance.
   tile and unregisters it from LaunchServices — if you delete a bundle by hand
   instead, the Dock keeps a tile pointing at nothing and LaunchServices may keep
   it as the preferred `claude://` handler. `cdesk claim main` resets that.
-- **`cdesk sync` replaces the bundle under a running instance.** Quit it first
-  if it is mid-conversation.
+- **`cdesk sync` skips running instances.** It updates Claude.app, but an open
+  instance keeps its version (and its own updater keeps failing) until you quit
+  it; the hourly LaunchAgent run rebuilds it then.
 - **Instances are ad-hoc signed** and therefore not notarized. macOS asks once
   for the `Claude Safe Storage` keychain item at first login; that prompt is
   expected, not a failure.

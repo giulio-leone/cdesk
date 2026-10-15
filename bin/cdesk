@@ -8,9 +8,10 @@
 # never touches them and never breaks the bundle's code signature.
 #
 # /Applications/Claude.app stays untouched and is one of the accounts; you only
-# create an instance for each *additional* account. `cdesk sync` re-clones every
-# instance that is behind the freshly updated Claude.app, and the LaunchAgent
-# installed by `cdesk autosync on` runs it the moment Anthropic ships an update.
+# create an instance for each *additional* account. `cdesk sync` first brings
+# Claude.app up to Anthropic's latest release, then re-clones every instance
+# behind it; the LaunchAgent installed by `cdesk autosync on` runs it hourly and
+# whenever Claude.app changes.
 
 set -euo pipefail
 
@@ -19,8 +20,11 @@ PROFILES="${CDESK_PROFILES:-$HOME/.claude-desktop-profiles}"
 APPS="$HOME/Applications"
 AGENT="$HOME/Library/LaunchAgents/io.cdesk.cdesk-sync.plist"
 STATE="$PROFILES/.state"
+MAIN_DATA="$HOME/Library/Application Support/Claude"
 CONFIG="${CDESK_CONFIG:-$HOME/.config/cdesk/instances.conf}"
 BACKUPS="${CDESK_BACKUPS:-$HOME/.config/cdesk/backups}"
+LATEST_DMG="https://api.anthropic.com/api/desktop/darwin/universal/dmg/latest/redirect"
+ANTHROPIC_TEAM=Q6L2SF6YDW
 PB=/usr/libexec/PlistBuddy
 LSREG=/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister
 
@@ -32,8 +36,9 @@ usage: cdesk <command> [args]
   cdesk apply                  build everything listed in the config
   cdesk run <name>             launch it
   cdesk list                   instances, versions, running state, claude:// owner
-  cdesk sync                   rebuild every instance behind Claude.app (LaunchAgent runs this)
+  cdesk sync                   update Claude.app, rebuild every instance behind it (LaunchAgent runs this)
   cdesk claim <name>|main      give claude:// (login + connector callbacks) to one app
+  cdesk main <name>            run <name>'s profile in Claude.app itself and drop its clone
   cdesk autosync on|off        (un)install the LaunchAgent that syncs on update
   cdesk backup <name>...       archive a profile (its login) under ~/.config/cdesk
   cdesk restore <name> [file]  put a profile back from the newest backup
@@ -43,6 +48,10 @@ usage: cdesk <command> [args]
 Only one app may own claude://. Clones are built without it so the main
 Claude.app keeps handling logins and connectors; `cdesk claim <name>` lends it
 to a clone while you log that clone in, `cdesk claim main` gives it back.
+
+Only Claude.app is signed by Anthropic, so only the account in it can register
+this Mac with claude.ai (mobile and web "your computer", device verification).
+`cdesk main <name>` puts that account there.
 
 Config:   ~/.config/cdesk/instances.conf   (name<TAB>#hex, one per line)
 Profiles: ~/.claude-desktop-profiles/<slug>   Apps: ~/Applications
@@ -145,10 +154,34 @@ sign_bundle() {
   # CFBundleExecutable is our launcher shim, so codesign treats the real Electron
   # binary next to it as a loose resource and would leave Anthropic's signature
   # on it — which seals the original Info.plist and fails verification.
+  # Anthropic signs Claude.app with com.apple.security.virtualization, which the
+  # Cowork VM needs. An ad-hoc re-sign drops every entitlement, and the app then
+  # reports "virtualization_entitlement_missing" and tells the user the
+  # installation is damaged. The entitlements belong on the real Electron binary,
+  # not on the bundle: CFBundleExecutable is our launcher script, and a script
+  # carries no signature to embed them in. Drop the keys that name Anthropic's
+  # team — an ad-hoc signature may not claim those.
+  local ents k; ents="$(mktemp)"
+  if codesign -d --entitlements :- "$SRC" 2>/dev/null > "$ents" && [ -s "$ents" ]; then
+    for k in com.apple.application-identifier com.apple.developer.team-identifier \
+             keychain-access-groups; do
+      $PB -c "Delete :$k" "$ents" >/dev/null 2>&1 || true
+    done
+  else
+    : > "$ents"
+  fi
+  local main_bin="$(basename "$b" .app)"
   while IFS= read -r p; do
     file -b "$p" | grep -q 'Mach-O' || continue
-    codesign --force --sign - "$p" 2>>/tmp/cdesk-codesign.err || return 1
+    if [ "$(basename "$p")" = "$main_bin" ] && [ -s "$ents" ]; then
+      codesign --force --sign - --entitlements "$ents" "$p" \
+        2>>/tmp/cdesk-codesign.err || { rm -f "$ents"; return 1; }
+    else
+      codesign --force --sign - "$p" 2>>/tmp/cdesk-codesign.err \
+        || { rm -f "$ents"; return 1; }
+    fi
   done < <(find "$b/Contents/MacOS" "$b/Contents/Helpers" -maxdepth 1 -type f -perm -111 2>/dev/null)
+  rm -f "$ents"
   codesign --force --sign - "$b" 2>>/tmp/cdesk-codesign.err
 }
 
@@ -217,6 +250,11 @@ build() {
   mv "$stage/Contents/MacOS/Claude" "$stage/Contents/MacOS/$disp"
   cat > "$stage/Contents/MacOS/$disp-launcher" <<EOF
 #!/bin/bash
+# Per-instance environment (e.g. an API gateway for the Code tab). It lives in
+# the profile, not in the bundle, so a rebuild or an update never drops it.
+if [ -f "$PROFILES/$slug/env" ]; then
+  set -a; . "$PROFILES/$slug/env"; set +a
+fi
 exec "\$(dirname "\$0")/$disp" --user-data-dir="$PROFILES/$slug" "\$@"
 EOF
   chmod +x "$stage/Contents/MacOS/$disp-launcher"
@@ -325,8 +363,48 @@ cmd_restore() {
 }
 
 # Re-clone every instance that is behind the current Claude.app.
+# Claude.app updates itself only while it runs, and the clones never can: their
+# Squirrel updater looks for the downloaded bundle under the clone's identifier
+# and fails on every check. So cdesk installs new releases into Claude.app itself,
+# from Anthropic's download endpoint, accepting only a bundle Anthropic signed.
+update_main() {
+  local url ver cur tmp new
+  url="$(curl -fsS -o /dev/null -w '%{redirect_url}' "$LATEST_DMG")" || return 1
+  ver="$(printf '%s' "$url" | sed -nE 's#^https://downloads\.claude\.ai/releases/darwin/universal/([0-9.]+)/[^/]+\.dmg$#\1#p')"
+  [ -n "$ver" ] || { echo "update: unexpected download URL: $url" >&2; return 1; }
+  cur="$(src_version)"
+  [ "$(printf '%s\n%s\n' "$cur" "$ver" | sort -V | tail -1)" != "$cur" ] || return 0
+  if pgrep -f "^$SRC/Contents/MacOS/Claude( |\$)" >/dev/null; then
+    echo "update: Claude.app is running and updates itself to $ver"
+    return 0
+  fi
+
+  tmp="$(mktemp -d "$PROFILES/.update.XXXXXX")"
+  new="$tmp/mnt/Claude.app"
+  if ! { curl -fsSL "$url" -o "$tmp/Claude.dmg" \
+         && diskutil image attach --readOnly --nobrowse --mountPoint "$tmp/mnt" "$tmp/Claude.dmg" >/dev/null; }; then
+    rm -rf "$tmp"; echo "update: download of $ver failed" >&2; return 1
+  fi
+  if ! { [ "$($PB -c 'Print :CFBundleIdentifier' "$new/Contents/Info.plist")" = com.anthropic.claudefordesktop ] \
+         && [ "$($PB -c 'Print :CFBundleShortVersionString' "$new/Contents/Info.plist")" = "$ver" ] \
+         && codesign --verify --deep --strict "$new" 2>/dev/null \
+         && codesign -dv "$new" 2>&1 | grep -x "TeamIdentifier=$ANTHROPIC_TEAM" >/dev/null \
+         && spctl --assess --type execute "$new" 2>/dev/null \
+         && ditto "$new" "$tmp/Claude.app"; }; then
+    hdiutil detach -quiet "$tmp/mnt"; rm -rf "$tmp"
+    echo "update: $ver rejected (identity or signature check failed)" >&2; return 1
+  fi
+  hdiutil detach -quiet "$tmp/mnt"
+  mv "$SRC" "$tmp/previous.app"
+  mv "$tmp/Claude.app" "$SRC"
+  rm -rf "$tmp"
+  "$LSREG" -f "$SRC" >/dev/null 2>&1 || true
+  echo "update: Claude.app $cur -> $ver"
+}
+
 cmd_sync() {
   local cur v hex name n=0
+  update_main || echo "update: keeping Claude.app $(src_version)" >&2
   cur="$(src_version)"
   shopt -s nullglob
   for bundle in "$APPS"/Claude\ *.app; do
@@ -335,6 +413,12 @@ cmd_sync() {
     v="$(head -1 "$(marker_of "$name")")"
     hex="$(sed -n 2p "$(marker_of "$name")")"
     [ "$v" = "$cur" ] && continue
+    # Swapping the bundle under a running Electron app leaves it spawning helpers
+    # from the new version; the hourly LaunchAgent run picks it up once it quits.
+    if pgrep -f -- "--user-data-dir=$PROFILES/$(slug_of "$name")" >/dev/null; then
+      echo "sync: $name is running; rebuilt after it quits"
+      continue
+    fi
     build "$name" "$hex" || { echo "sync: skipped $name" >&2; continue; }
     n=$((n + 1))
   done
@@ -344,7 +428,7 @@ cmd_sync() {
 cmd_list() {
   local running cur v name mark
   cur="$(src_version)"
-  echo "Claude.app: $cur"
+  echo "Claude.app: $cur$([ -L "$MAIN_DATA" ] && echo "   (profile: $(readlink "$MAIN_DATA"))" || true)"
   echo "claude:// : $(scheme_owner)"
   running="$(ps -Ao command | grep -F -- '--user-data-dir=' || true)"
   shopt -s nullglob
@@ -394,6 +478,31 @@ cmd_claim() {
   [ "$target" = "main" ] || echo "when done:  cdesk claim main"
 }
 
+# Anthropic's signature grants Claude.app the keychain group that holds the
+# hardware device key. An ad-hoc clone cannot read it, so its account never
+# registers this Mac and claude.ai answers "open the Claude desktop app on your
+# computer first". The account that needs it has to run in Claude.app itself:
+# link Claude.app's data dir to that profile and drop the clone.
+cmd_main() {
+  local name="$1" profile
+  profile="$PROFILES/$(slug_of "$name")"
+  [ -d "$profile" ] || { echo "no profile for $name" >&2; exit 1; }
+  if pgrep -f -- "--user-data-dir=$profile" >/dev/null \
+     || pgrep -f "^$SRC/Contents/MacOS/Claude( |\$)" >/dev/null; then
+    echo "quit Claude $name and Claude.app first" >&2; exit 1
+  fi
+  if [ -L "$MAIN_DATA" ]; then
+    rm "$MAIN_DATA"
+  elif [ -e "$MAIN_DATA" ]; then
+    local kept; kept="$MAIN_DATA.$(date +%Y%m%d-%H%M%S)"
+    mv "$MAIN_DATA" "$kept"
+    echo "previous Claude.app data kept at $kept"
+  fi
+  ln -s "$profile" "$MAIN_DATA"
+  [ ! -d "$(bundle_of "$name")" ] || cmd_remove "$name"
+  cmd_claim main
+}
+
 cmd_autosync() {
   case "${1:-}" in
     on)
@@ -408,6 +517,7 @@ cmd_autosync() {
   <array><string>$HOME/.local/bin/cdesk</string><string>sync</string></array>
   <key>WatchPaths</key>
   <array><string>$SRC/Contents/Info.plist</string></array>
+  <key>StartInterval</key><integer>3600</integer>
   <key>RunAtLoad</key><true/>
   <key>EnvironmentVariables</key>
   <dict>
@@ -491,6 +601,7 @@ case "$1" in
   list|ls)   cmd_list ;;
   sync)      cmd_sync ;;
   claim)     shift; cmd_claim "${1:-}" ;;
+  main)      shift; [ $# -eq 1 ] || { usage; exit 1; }; cmd_main "$1" ;;
   autosync)  shift; cmd_autosync "${1:-}" ;;
   remove|rm) shift; [ $# -ge 1 ] || { usage; exit 1; }; cmd_remove "$@" ;;
   -h|--help|help) usage ;;
