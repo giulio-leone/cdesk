@@ -185,6 +185,102 @@ sign_bundle() {
   codesign --force --sign - "$b" 2>>/tmp/cdesk-codesign.err
 }
 
+# In bypass permissions mode the app is meant to start side sessions without a
+# card (its forceAskVerdict stands down with "bypass"), but some runtime checks
+# keep it from doing so and every start_session/hand_off_to_session in a new
+# place waits for a click. Patch the clone's main-process code so bypass mode
+# always stands down for those two tools, then rewrite app.asar and its
+# ElectronAsarIntegrity hash. The app still records the place grant itself.
+# Idempotent; refuses (and leaves the bundle untouched) when the code changed.
+patch_bypass_start() {
+  python3 - "$1" <<'PY'
+import hashlib, json, os, plistlib, re, struct, sys
+
+bundle = sys.argv[1]
+asar = os.path.join(bundle, "Contents/Resources/app.asar")
+plist = os.path.join(bundle, "Contents/Info.plist")
+mark = b"/*cdesk:bypass-start*/"
+patches = [
+    # forceAskVerdict(tool, input, sessionId, ...): bypass stands down for start tools.
+    (re.compile(rb"async forceAskVerdict\((\w+),\w+,(\w+),\w+,\w+\)\{"),
+     lambda m: m.group(0) + mark + b'if(/(^|__)(start_session|hand_off_to_session)$/.test(' + m.group(1)
+     + b')&&this.config.getSession(' + m.group(2) + b')?.permissionMode==="bypassPermissions")return{standDown:"bypass"};'),
+    # canUseTool: allow on that stand-down without the extra ask-rule conditions.
+    (re.compile(rb'else if\(\w+&&(\w+)&&\w+&&(\(await this\.forceAskVerdict\(\w+,\w+,\w+\)\)\.standDown==="bypass")&&await \w+\(\)===!1\)'),
+     lambda m: b"else if(" + m.group(1) + b"&&" + m.group(2) + b")"),
+]
+
+with open(asar, "rb") as f:
+    _, hsize, _, jlen = struct.unpack("<IIII", f.read(16))
+    header = json.loads(f.read(jlen))
+    f.seek(8 + hsize)
+    blob = f.read()
+
+entries = []
+def walk(node, path):
+    for k, v in node["files"].items():
+        p = f"{path}/{k}" if path else k
+        if "files" in v:
+            walk(v, p)
+        elif "offset" in v:
+            entries.append((p, v))
+walk(header, "")
+
+def data_of(v):
+    o = int(v["offset"])
+    return blob[o:o + v["size"]]
+
+target = [(p, v) for p, v in entries if p.startswith(".vite/build/") and b"async forceAskVerdict(" in data_of(v)]
+if len(target) != 1:
+    sys.exit(f"patch_bypass_start: expected one file with forceAskVerdict, found {len(target)}")
+path, node = target[0]
+code = data_of(node)
+if mark in code:
+    print(f"patch_bypass_start: {bundle} already patched")
+    sys.exit(0)
+for rx, repl in patches:
+    code, n = rx.subn(repl, code)
+    if n != 1:
+        sys.exit(f"patch_bypass_start: {rx.pattern[:40]!r} matched {n} times in {path}; app code changed")
+
+out, pos, shared = [], 0, {}
+for p, v in sorted(entries, key=lambda e: int(e[1]["offset"])):
+    key = None if v is node else (v["offset"], v["size"])  # identical files share one copy
+    if key in shared:
+        v["offset"] = shared[key]
+        continue
+    if key:
+        shared[key] = str(pos)
+    data = code if v is node else data_of(v)
+    if v is node:
+        bs = v["integrity"]["blockSize"]
+        v["size"] = len(data)
+        v["integrity"]["hash"] = hashlib.sha256(data).hexdigest()
+        v["integrity"]["blocks"] = [hashlib.sha256(data[i:i + bs]).hexdigest() for i in range(0, len(data), bs)]
+    v["offset"] = str(pos)
+    out.append(data)
+    pos += len(data)
+
+hjson = json.dumps(header, separators=(",", ":")).encode()
+inner = (len(hjson) + 4 + 3) // 4 * 4
+tmp = asar + ".cdesk-tmp"
+with open(tmp, "wb") as f:
+    f.write(struct.pack("<IIII", 4, inner + 4, inner, len(hjson)))
+    f.write(hjson + b"\0" * (inner - 4 - len(hjson)))
+    for d in out:
+        f.write(d)
+os.replace(tmp, asar)
+
+with open(plist, "rb") as f:
+    info = plistlib.load(f)
+info["ElectronAsarIntegrity"]["Resources/app.asar"]["hash"] = hashlib.sha256(hjson).hexdigest()
+with open(plist + ".cdesk-tmp", "wb") as f:
+    plistlib.dump(info, f)
+os.replace(plist + ".cdesk-tmp", plist)
+print(f"patch_bypass_start: patched {path} in {bundle}")
+PY
+}
+
 scheme_owner() {
   local f; f="$(mktemp -d)/h.swift"
   cat > "$f" <<'EOF'
@@ -264,6 +360,8 @@ EOF
   # Only one app may own claude://. A clone that also claims it steals every
   # OAuth and connector callback from the main app, which then fails silently.
   url_claims "$stage" off
+
+  patch_bypass_start "$stage" || echo "warning: $name keeps the start-session card in bypass mode" >&2
 
   # --deep signing occasionally trips over a still-settling helper; one retry
   # turns that transient into a no-op instead of a silently skipped instance.
