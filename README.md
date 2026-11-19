@@ -178,11 +178,6 @@ Electron processes no matter how they are installed.
   you quit it.
 - Renaming an instance means `remove` + `create`; the profile is keyed by name.
 
-## Claude Code
-
-For the CLI the same problem is already solved by
-[claude-swap](https://pypi.org/project/claude-swap/): `cswap run <n>` isolates a
-terminal via `CLAUDE_CONFIG_DIR`. `cdesk` is the desktop-side counterpart.
 
 ## Licence
 
