@@ -22,9 +22,9 @@ cdesk --help
 ```
 
 <details>
-<summary>Install from source</summary>
+<summary>Install from source or a downloaded package</summary>
 
-Run `npm install -g .` from a local checkout. On macOS or Linux, `./install.sh` can link the checkout into `~/.local/bin`. On macOS the script also applies an existing Claude Desktop instances config and enables autosync when the Desktop requirements are present.
+Run `npm install -g .` from a local checkout, or `npm install -g ./cdesk-profiles-1.3.0.tgz` from the folder containing the tarball. On macOS or Linux, `./install.sh` can link the checkout into `~/.local/bin`. On macOS the script also applies an existing Claude Desktop instances config and enables autosync when the Desktop requirements are present.
 
 </details>
 
@@ -134,6 +134,6 @@ claude plugin install cdesk@cdesk
 
 In PowerShell, use `claude plugin marketplace add (Join-Path (npm root -g) 'cdesk-profiles')` for the first command. From a source checkout, use `claude plugin marketplace add .`.
 
-Open a new Claude Code session and use `/cdesk setup claude work`, or ask Claude to configure a gateway for a named profile.
+Open a new Claude Code session and use `/cdesk:cdesk setup claude work`, or ask Claude to configure a gateway for a named profile.
 
 [MIT License](LICENSE)
