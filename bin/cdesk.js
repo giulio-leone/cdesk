@@ -4,13 +4,24 @@
 const { spawn } = require('node:child_process');
 const { existsSync, mkdirSync, readdirSync } = require('node:fs');
 const { constants: { signals }, homedir } = require('node:os');
-const { join, resolve } = require('node:path');
+const { delimiter, isAbsolute, join, resolve } = require('node:path');
 
-const cliHelp = `Usage: cdesk cli <profile> [claude arguments...]
-       cdesk cli --list
-
-Run Claude Code with a separate configuration and login for each profile.
-Profile names use letters, digits, hyphens and underscores.`;
+const terminalTools = {
+  cli: {
+    name: 'Claude Code',
+    profileRoot: 'CDESK_CODE_PROFILES',
+    defaultRoot: '.claude-code-profiles',
+    configDir: 'CLAUDE_CONFIG_DIR',
+    executable: () => [claudeExecutable()],
+  },
+  codex: {
+    name: 'Codex CLI',
+    profileRoot: 'CDESK_CODEX_PROFILES',
+    defaultRoot: '.codex-profiles',
+    configDir: 'CODEX_HOME',
+    executable: codexExecutable,
+  },
+};
 
 const desktopHelp = `Usage: cdesk run <profile>
        cdesk list
@@ -37,12 +48,19 @@ function profileName(input) {
 }
 
 function listProfiles(root) {
-  for (const entry of readdirSync(root, { withFileTypes: true, throwIfNoEntry: false }) ?? []) {
+  let entries;
+  try {
+    entries = readdirSync(root, { withFileTypes: true });
+  } catch (error) {
+    if (error.code === 'ENOENT') return;
+    throw error;
+  }
+  for (const entry of entries) {
     if (entry.isDirectory()) console.log(entry.name);
   }
 }
 
-function codeExecutable() {
+function claudeExecutable() {
   if (process.env.CDESK_CLAUDE_BIN) return process.env.CDESK_CLAUDE_BIN;
   if (process.platform !== 'win32') return 'claude';
   // Prefer the official native installer location over the Windows search path.
@@ -50,21 +68,51 @@ function codeExecutable() {
   return existsSync(native) ? native : 'claude.exe';
 }
 
-function claudeCode([profile, ...args]) {
+function codexExecutable() {
+  if (process.env.CDESK_CODEX_BIN) return [process.env.CDESK_CODEX_BIN];
+  if (process.platform !== 'win32') return ['codex'];
+
+  for (const entry of (process.env.PATH ?? '').split(delimiter)) {
+    const directory = entry.replace(/^"(.*)"$/, '$1');
+    if (!isAbsolute(directory)) continue;
+    const native = join(directory, 'codex.exe');
+    if (existsSync(native)) return [native];
+
+    // Invoke the official global npm entry point directly. Launching its .cmd
+    // shim would require a shell, which can reinterpret the user's arguments.
+    const npmEntry = join(directory, 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
+    if (existsSync(join(directory, 'codex.cmd')) && existsSync(npmEntry)) {
+      return [process.execPath, npmEntry];
+    }
+  }
+  return ['codex.exe'];
+}
+
+function terminalHelp(command, tool) {
+  return `Usage: cdesk ${command} <profile> [arguments...]
+       cdesk ${command} --list
+
+Run ${tool.name} with a separate configuration and login for each profile.
+Profile names use letters, digits, hyphens and underscores.`;
+}
+
+function runTerminal(command, tool, [profile, ...args]) {
   if (profile === undefined || profile === '--help' || profile === '-h') {
-    console.log(cliHelp);
+    console.log(terminalHelp(command, tool));
     return;
   }
 
-  const root = resolve(process.env.CDESK_CODE_PROFILES || join(homedir(), '.claude-code-profiles'));
+  const root = resolve(process.env[tool.profileRoot] || join(homedir(), tool.defaultRoot));
   if (profile === '--list' && args.length === 0) {
     return listProfiles(root);
   }
 
   const config = join(root, profileName(profile));
   mkdirSync(config, { recursive: true, mode: 0o700 });
-  run(codeExecutable(), args[0] === '--' ? args.slice(1) : args, {
-    env: { ...process.env, CLAUDE_CONFIG_DIR: config },
+  const [executable, ...prefix] = tool.executable();
+  const forwarded = args[0] === '--' ? args.slice(1) : args;
+  run(executable, [...prefix, ...forwarded], {
+    env: { ...process.env, [tool.configDir]: config },
   });
 }
 
@@ -81,12 +129,13 @@ function claudeDesktop(command, args) {
 }
 
 function main([command, ...args]) {
-  if (command === 'cli') return claudeCode(args);
+  if (Object.hasOwn(terminalTools, command)) return runTerminal(command, terminalTools[command], args);
   if (process.platform === 'darwin') {
     return run('/bin/bash', [join(__dirname, 'cdesk'), ...process.argv.slice(2)]);
   }
   if (command === undefined || command === 'help' || command === '--help' || command === '-h') {
-    console.log(`${cliHelp}\n\n${desktopHelp}`);
+    const terminalHelpText = Object.entries(terminalTools).map(([name, tool]) => terminalHelp(name, tool));
+    console.log([...terminalHelpText, desktopHelp].join('\n\n'));
     return;
   }
   claudeDesktop(command, args);

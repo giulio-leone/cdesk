@@ -35,6 +35,8 @@ usage: cdesk <command> [args]
 
   cdesk cli <profile> [args] run Claude Code with its own configuration and login
   cdesk cli --list          list Claude Code profiles
+  cdesk codex <profile> [args] run Codex CLI with its own configuration and login
+  cdesk codex --list          list Codex CLI profiles
 
 macOS Desktop commands:
   cdesk create <name> [#hex]   build "Claude <name>.app" with a tinted icon
@@ -715,7 +717,7 @@ script_path() {
   printf '%s/%s\n' "$(cd "$(dirname "$script")" && pwd -P)" "$(basename "$script")"
 }
 
-if [ "${1:-}" = cli ] || [ "$(uname -s)" != Darwin ]; then
+if [ "${1:-}" = cli ] || [ "${1:-}" = codex ] || [ "$(uname -s)" != Darwin ]; then
   command -v node >/dev/null || { echo 'cdesk: install Node.js to use this command' >&2; exit 127; }
   exec node "$(dirname "$(script_path)")/cdesk.js" "$@"
 fi
