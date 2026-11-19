@@ -41,7 +41,7 @@ cdesk list
 
 Run the commands in separate terminals if the app remains attached. Each name has its own application data directory under `~/.claude-desktop-profiles`. On Linux, use Anthropic's [Claude Desktop beta for Ubuntu or Debian](https://support.claude.com/en/articles/10065433-install-claude-desktop).
 
-Browser links and OAuth callbacks still use the system's `claude://` handler. When signing in, close other Claude Desktop windows first. If the browser opens a different profile, check the account shown by the app before continuing.
+Browser links and OAuth callbacks use the system's `claude://` handler, which can open the default Claude Desktop profile. To sign in to a named profile by email, choose **Continue with email** in its window, open the email link on another device to get a verification code, then enter the code in the original window. [Claude sign-in instructions](https://support.claude.com/en/articles/13189465-log-in-to-your-claude-account)
 
 ### macOS
 

@@ -13,7 +13,7 @@ Run `cdesk cli --list` to show named profiles. Use `cdesk cli <profile> auth sta
 
 ## Claude Desktop
 
-On Windows and Linux, use `cdesk list` to see profiles and `cdesk run <profile>` to open one. The first run creates its data directory. If browser sign-in opens the wrong window, close other Claude Desktop profiles and retry, then verify the account shown in the app.
+On Windows and Linux, use `cdesk list` to see profiles and `cdesk run <profile>` to open one. The first run creates its data directory. The system `claude://` handler can open the default profile. For email sign-in to a named profile, follow the verification-code instructions in the [README](../../README.md#windows-and-linux) and enter the code in the window that requested it.
 
 On macOS, use `cdesk create <name>` to build a clone before running it. `cdesk apply` rebuilds instances from the config and `cdesk sync` updates closed clones. Refer to `cdesk --help` for the other Desktop commands.
 
