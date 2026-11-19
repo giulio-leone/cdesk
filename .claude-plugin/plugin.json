@@ -3,5 +3,5 @@
   "description": "Set up named profiles and gateways for Claude Code and Codex CLI, and manage Claude Desktop instances.",
   "version": "1.3.0",
   "author": { "name": "cdesk contributors" },
-  "license": "MIT"
+  "license": "Apache-2.0"
 }

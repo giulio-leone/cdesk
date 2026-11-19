@@ -2,10 +2,10 @@
   "name": "cdesk-profiles",
   "version": "1.3.0",
   "description": "Named profiles for Codex CLI, Claude Code, and Claude Desktop",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "engines": { "node": ">=22" },
   "bin": { "cdesk": "bin/cdesk.js" },
   "scripts": { "test": "node --test" },
-  "files": ["bin", ".claude-plugin", "commands", "skills"],
+  "files": ["bin", ".claude-plugin", "commands", "skills", "NOTICE"],
   "publishConfig": { "access": "public", "registry": "https://registry.npmjs.org/" }
 }

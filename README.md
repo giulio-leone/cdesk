@@ -136,4 +136,4 @@ In PowerShell, use `claude plugin marketplace add (Join-Path (npm root -g) 'cdes
 
 Open a new Claude Code session and use `/cdesk:cdesk setup claude work`, or ask Claude to configure a gateway for a named profile.
 
-[MIT License](LICENSE)
+[Apache License 2.0](LICENSE)
