@@ -9,7 +9,7 @@ Identify the client and the profile name from the request. Claude Code, Codex CL
 
 ## Install and set up a profile
 
-1. Check `cdesk --help` and the selected client’s `--version`. If `cdesk` is missing, install it with `npm install -g cdesk-profiles`. For a source checkout or a supplied npm tarball, install from that source instead. The terminal launchers require Node.js 22 or newer.
+1. Check `cdesk --help` and the selected client’s `--version`. If `cdesk` is missing, install the tarball from the GitHub release with `npm install -g <path-to-tarball>`, or run `npm install -g .` from the cdesk checkout. The terminal launchers require Node.js 22 or newer.
 2. Use the commands below inside the selected profile. The first launch creates its directory. Guide the user through any browser sign-in that the native client opens.
 3. Check the profile's login status and list profiles again. For gateway profiles, use the verification step in the [gateway guide](references/gateways.md).
 

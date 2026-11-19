@@ -14,17 +14,17 @@ The terminal commands run on macOS, Windows and Linux. The Claude Desktop setup 
 
 ## Get started
 
-Install [Node.js 22+](https://nodejs.org/) and the client you want to use.
+Install [Node.js 22+](https://nodejs.org/) and the client you want to use. Download `cdesk-profiles-1.3.0.tgz` from the repository’s GitHub release, then run these commands from your downloads folder.
 
 ```sh
-npm install -g cdesk-profiles
+npm install -g ./cdesk-profiles-1.3.0.tgz
 cdesk --help
 ```
 
 <details>
-<summary>Install from source or a downloaded package</summary>
+<summary>Install from source</summary>
 
-Run `npm install -g .` from a local checkout, or `npm install -g ./cdesk-profiles-1.3.0.tgz` from the folder containing the tarball. On macOS or Linux, `./install.sh` can link the checkout into `~/.local/bin`. On macOS the script also applies an existing Claude Desktop instances config and enables autosync when the Desktop requirements are present.
+Run `npm install -g .` from a local checkout. On macOS or Linux, `./install.sh` can link the checkout into `~/.local/bin`. On macOS the script also applies an existing Claude Desktop instances config and enables autosync when the Desktop requirements are present.
 
 </details>
 
