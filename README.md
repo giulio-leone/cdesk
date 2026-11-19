@@ -1,189 +1,102 @@
 # cdesk
 
-Run several Claude Desktop apps side by side on macOS, one account each.
-
-macOS will not launch two copies of the same app bundle against the same
-profile, and Claude Desktop has no account switcher. `cdesk` gives every extra
-account its own real app: its own Dock entry, its own icon colour, its own
-login and history — all still running against the single `/Applications/Claude.app`
-that Anthropic keeps up to date.
-
-```
-$ cdesk list
-Claude.app: 1.28929.0
-claude:// : /Applications/Claude.app
-  Work           1.28929.0
-  Personal        1.28929.0
-```
+Run Claude Code in the terminal and Claude Desktop with named profiles on macOS, Windows and Linux.
 
 ## Install
 
-```bash
-git clone https://example.invalid/cdesk.git
-cd cdesk && ./install.sh
+Install [Node.js 22 or later](https://nodejs.org/) and the official [Claude Code CLI](https://code.claude.com/docs/en/setup) or [Claude Desktop app](https://claude.com/download). On Windows use the native Claude Code installer and keep the Claude Desktop execution alias (`claude-desktop.exe`) enabled if using the app.
+
+From a local checkout of this repository:
+
+```sh
+npm install -g .
+cdesk --help
 ```
 
-`install.sh` symlinks `bin/cdesk` into `~/.local/bin`, rebuilds whatever is
-listed in `~/.config/cdesk/instances.conf`, turns on the update LaunchAgent, and
-registers the Claude Code plugin. On a new machine that is the whole setup:
-clone, copy your `instances.conf` across, run it.
+On macOS and Linux, `./install.sh` can instead link this checkout into `~/.local/bin`. On macOS it also applies an existing Desktop instances config and enables autosync if the Desktop requirements are present.
 
-Requirements: macOS on APFS, Claude Desktop in `/Applications`, Xcode command
-line tools (`codesign`, `swift`), and `python3` with Pillow (only for the tinted
-icons — without it instances still build, they just keep the stock icon).
+## Claude Code in the terminal
 
-## Use
+```sh
+cdesk cli work auth login
+cdesk cli work auth status
+cdesk cli work
+cdesk cli personal -p "Summarize this project"
+cdesk cli --list
+```
 
-```bash
-cdesk create Work            # build "Claude Work.app", colour picked from the name
-cdesk create Work "#3B82F6"  # ...or pick it yourself
+The first use creates the profile. Arguments, the working directory, terminal input and exit status pass through to Claude Code. Each name selects a different `CLAUDE_CONFIG_DIR` under `~/.claude-code-profiles` (`%USERPROFILE%\.claude-code-profiles` on Windows). The default `claude` command still uses its normal configuration.
+
+Sign in to each profile with Claude Code itself. Explicit authentication and provider variables from the shell, such as `ANTHROPIC_API_KEY`, still apply to the child process. Use different names for different accounts and keep profile directories out of version control.
+
+## Claude Desktop
+
+### Windows and Linux
+
+```sh
+cdesk run work
+cdesk run personal
+cdesk list
+```
+
+Run the commands in separate terminals if the app remains attached. Each name has its own application data directory under `~/.claude-desktop-profiles`. On Linux, use Anthropic's [Claude Desktop beta for Ubuntu or Debian](https://support.claude.com/en/articles/10065433-install-claude-desktop).
+
+Browser links and OAuth callbacks still use the system's `claude://` handler. When signing in, close other Claude Desktop windows first. If the browser opens a different profile, check the account shown by the app before continuing.
+
+### macOS
+
+Install Claude.app in `/Applications`, the Xcode command-line tools, and Python 3. Pillow is optional for tinted icons.
+
+```sh
+cdesk create Work
+cdesk create Personal "#8B5CF6"
 cdesk run Work
 cdesk list
-cdesk autosync on            # keep every instance in step with Claude.app
 ```
 
-`/Applications/Claude.app` is itself one of your accounts — leave it alone and
-only create instances for the *extra* ones.
+Each clone gets its own Dock entry and data directory. Existing clones, profiles and `~/.config/cdesk/instances.conf` keep their paths.
 
-| command | what it does |
+| Command | Purpose |
 | --- | --- |
-| `cdesk create <name> [#hex]` | build `~/Applications/Claude <name>.app` |
-| `cdesk apply` | build everything in `~/.config/cdesk/instances.conf` |
-| `cdesk run <name>` | launch it |
-| `cdesk list` | instances, versions, running state, `claude://` owner |
-| `cdesk sync` | update Claude.app, rebuild every instance behind it |
-| `cdesk claim <name>\|main` | hand the `claude://` scheme to one app |
-| `cdesk main <name>` | run `<name>`'s profile in Claude.app itself and drop its clone |
-| `cdesk autosync on\|off` | LaunchAgent that syncs hourly and when Claude.app changes |
-| `cdesk backup <name>...` | archive a profile, i.e. its login |
-| `cdesk restore <name> [file]` | put a profile back from the newest backup |
-| `cdesk remove <name> [--purge]` | delete the app, its Dock tile and its LaunchServices registration; `--purge` also drops its login |
+| `cdesk create <name> [#hex]` | Build `~/Applications/Claude <name>.app` |
+| `cdesk apply` | Build the instances in `~/.config/cdesk/instances.conf` |
+| `cdesk run <name>` | Launch a clone |
+| `cdesk list` | Show versions, running instances and the `claude://` handler |
+| `cdesk claim <name>\|main` | Set the `claude://` handler |
+| `cdesk main <name>` | Use a profile in the signed Claude.app and remove its clone |
+| `cdesk sync` | Update the signed app and rebuild outdated, closed clones |
+| `cdesk autosync on\|off` | Enable or disable the update LaunchAgent |
+| `cdesk backup <name>...` | Archive Desktop profiles on this Mac |
+| `cdesk restore <name> [file]` | Restore a Desktop profile |
+| `cdesk remove <name> [--purge]` | Remove the clone, and with `--purge`, its login and history |
 
-### The config file
+The config uses one `name<TAB>#hex` entry per line. Rebuilds keep app data under `~/.claude-desktop-profiles`. Desktop backups contain live session cookies encrypted with the local Keychain key. Store them privately and restore them on the same Mac.
 
-`create`, `remove` and `apply` all maintain `~/.config/cdesk/instances.conf`:
+For browser sign-in or connector setup, run `cdesk claim Work`, complete the flow in Claude Work, then run `cdesk claim main` to return the handler. The original Claude.app keeps Anthropic's signature and hardware device registration. To use a particular account for that registration, quit both apps and run `cdesk main Work`.
 
-```
-Work	#EF4444
-Personal	#8B5CF6
-```
+## Paths and executable overrides
 
-One `name<TAB>#hex` per line. That file plus this repo is everything needed to
-rebuild a machine, so keep it somewhere you sync.
+| Variable | Purpose |
+| --- | --- |
+| `CDESK_CODE_PROFILES` | Directory for named Claude Code profiles |
+| `CDESK_CLAUDE_BIN` | Path to the Claude Code executable |
+| `CDESK_PROFILES` | Directory for Claude Desktop profiles |
+| `CDESK_DESKTOP_BIN` | Path to the Claude Desktop executable on Windows or Linux |
+| `CLAUDE_APP` | Path to Claude.app on macOS |
 
-### Auth profiles
-
-A profile directory holds the logged-in session, so it is worth keeping:
-
-```bash
-cdesk backup Personal            # -> ~/.config/cdesk/backups/personal-<stamp>.tgz
-cdesk restore Personal           # newest backup, or pass a specific file
-```
-
-Backups survive rebuilds and reinstalls **on the same Mac**. They are not
-portable: the cookies inside are encrypted with the local `Claude Safe Storage`
-keychain key, so a restore on another machine lands you logged out. They also
-contain live session cookies — keep them out of git and off shared drives.
+Use letters, digits, hyphens and underscores for portable profile names. Claude Code and Claude Desktop sign in separately, even when you give their profiles the same name.
 
 ## Claude Code plugin
 
-The repo doubles as a Claude Code plugin, so any session knows how to drive
-`cdesk` and, more usefully, knows the `claude://` rule below before it starts
-debugging a login.
+From the repository root:
 
-```bash
-claude plugin marketplace add /path/to/cdesk
+```sh
+claude plugin marketplace add .
 claude plugin install cdesk@cdesk
 ```
 
-That gives you the `cdesk` skill and a `/cdesk` command. The plugin cache is
-keyed by the version in `.claude-plugin/plugin.json` — bump it and run
-`claude plugin update cdesk@cdesk` to ship a change.
+That makes the `/cdesk` command and skill available to Claude Code.
 
-## Logging an instance in
-
-Only one app on the system can own the `claude://` URL scheme, and that is where
-OAuth and connector callbacks land. Instances are therefore built **without**
-claiming it, so the main Claude.app keeps working normally. To log an instance
-in — or to add a connector to it — borrow the scheme, then give it back:
-
-```bash
-cdesk claim Work     # log in / add connectors in Claude Work.app
-cdesk claim main     # hand claude:// back to /Applications/Claude.app
-```
-
-If connectors ever stop working in the main app, `cdesk list` will show you who
-owns the scheme, and `cdesk claim main` fixes it.
-
-## Which account lives in Claude.app
-
-Only `/Applications/Claude.app` carries Anthropic's signature, and with it the
-keychain group that holds the hardware device key. A clone is signed ad hoc and
-cannot read that key, so its account never registers this Mac with claude.ai:
-the mobile and web apps answer "open the Claude desktop app on your computer
-first", and the log shows `[device-registry] enclave key unavailable`. One
-account can have it — the one in Claude.app:
-
-```bash
-cdesk main Personal   # quit Claude Personal and Claude.app first
-```
-
-That links Claude.app's data directory to the profile, removes the clone and
-gives `claude://` back to Claude.app. The data Claude.app had before is kept
-next to it as `Claude.<stamp>`.
-
-## Updates
-
-Instances cannot self-update: Squirrel looks for the downloaded bundle under the
-instance's own identifier and fails on every check. `cdesk sync` therefore
-installs Anthropic's latest release into `/Applications/Claude.app` (only a
-notarized bundle signed by Anthropic's team, and only while Claude.app is not
-running — when it runs it updates itself), then re-clones every instance that is
-behind it. `cdesk autosync on` installs a LaunchAgent that runs `sync` hourly and
-whenever Claude.app changes. Profiles live in `~/.claude-desktop-profiles/<slug>`,
-outside the bundles, so rebuilds never touch your logins or history.
-
-## How it works
-
-Claude Desktop is an Electron app, so the isolation lever is Chromium's
-`--user-data-dir`. An instance is an APFS clone of `Claude.app` with:
-
-- `CFBundleName` / `CFBundleDisplayName` / `CFBundleIdentifier` rewritten, so
-  LaunchServices treats it as a separate app with its own Dock entry;
-- the four `Contents/Frameworks/Claude Helper*.app` bundles renamed to match —
-  Electron resolves its helpers from `CFBundleName` and dies with
-  `FATAL … Unable to find helper app` otherwise;
-- `CFBundleExecutable` pointing at a launcher shim that `exec`s the real binary
-  with `--user-data-dir=~/.claude-desktop-profiles/<slug>`, so a Dock click needs
-  no arguments;
-- `CFBundleURLTypes` removed, so it cannot steal `claude://` from the main app;
-- the icon hue-rotated to a per-instance colour.
-
-### Disk
-
-About **17 MB per instance**, not 800 MB. `cp -c` clones the bundle at the APFS
-block level, and the frameworks — which are copied verbatim and keep Anthropic's
-valid signature — are deliberately *not* re-signed, so their blocks stay shared
-with `/Applications/Claude.app`. Only the renamed helper bundles, the main
-binary and the outer bundle get an ad-hoc signature.
-
-Memory is unaffected either way: three running Claude instances cost three
-Electron processes no matter how they are installed.
-
-### Caveats
-
-- Instances are **ad-hoc signed**, so they are no longer notarized. macOS asks
-  once for the `Claude Safe Storage` keychain item on first login.
-- `cdesk sync` skips a running instance; the next hourly run rebuilds it once
-  you quit it.
-- Renaming an instance means `remove` + `create`; the profile is keyed by name.
-
-## Claude Code
-
-For the CLI the same problem is already solved by
-[claude-swap](https://pypi.org/project/claude-swap/): `cswap run <n>` isolates a
-terminal via `CLAUDE_CONFIG_DIR`. `cdesk` is the desktop-side counterpart.
-
-## Licence
+## License
 
 MIT

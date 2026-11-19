@@ -1,11 +1,7 @@
 {
   "name": "cdesk",
-  "description": "Run several Claude Desktop apps side by side on macOS, one account each — cloned bundles with their own Dock entry, icon, login and history, kept in step with Claude.app.",
-  "version": "1.1.0",
-  "author": {
-    "name": "cdesk contributors",
-    "url": "https://example.invalid"
-  },
-  "homepage": "https://example.invalid/cdesk",
+  "description": "Run Claude Code with named profiles and manage separate Claude Desktop instances.",
+  "version": "1.2.0",
+  "author": { "name": "cdesk contributors" },
   "license": "MIT"
 }

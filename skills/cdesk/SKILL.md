@@ -1,100 +1,22 @@
 ---
 name: cdesk
-description: Manage multiple Claude Desktop apps on macOS, one account each, with the `cdesk` CLI. Use when the user wants a second (or third) Claude Desktop for another account, asks to create/rename/remove a per-account Claude app, wants the instances updated after Claude updates, wants to back up or restore a Desktop login, or reports that adding a connector or logging in fails or opens the wrong Claude window.
+description: Use named Claude Code terminal profiles, or create, launch, update or troubleshoot isolated Claude Desktop profiles managed by cdesk.
 ---
 
 # cdesk
 
-`cdesk` gives every extra Claude account its own real macOS app: own Dock entry,
-own icon colour, own login and history. `/Applications/Claude.app` is itself one
-of the accounts and is never modified — only create instances for the *extra*
-ones.
+Determine whether the request concerns Claude Code in the terminal or the Claude Desktop app. They store sessions separately.
 
-Run `cdesk` with no arguments for the full command list. Everything below is
-what you cannot guess from `--help`.
+## Claude Code on macOS, Windows and Linux
 
-## Doing the common things
+Run `cdesk cli --list` to show named profiles. Use `cdesk cli <profile> auth status` to check the selected account and `cdesk cli <profile> auth login` to start sign-in. For other work, pass Claude Code arguments after the profile name. Credentials configured explicitly in the shell still apply to the child process.
 
-| user asks | command |
-| --- | --- |
-| "add a Claude for <account>" | `cdesk create <Name>` (colour is derived from the name; pass `#RRGGBB` to force one) |
-| "what do I have?" | `cdesk list` |
-| "rebuild everything on this machine" | `cdesk apply` (reads `~/.config/cdesk/instances.conf`) |
-| "they're out of date" | `cdesk sync` |
-| "keep them updated by themselves" | `cdesk autosync on` |
-| "rename X to Y" | `cdesk remove X` then `cdesk create Y` — the profile is keyed by name, so the login does not follow. Back up first if it matters. |
-| "don't lose my login" | `cdesk backup <Name>` / `cdesk restore <Name>` |
+## Claude Desktop
 
-`create`, `remove` and `apply` keep `~/.config/cdesk/instances.conf` in sync, so
-that one file plus the repo rebuilds a whole machine.
+On Windows and Linux, use `cdesk list` to see profiles and `cdesk run <profile>` to open one. The first run creates its data directory. If browser sign-in opens the wrong window, close other Claude Desktop profiles and retry, then verify the account shown in the app.
 
-## The claude:// rule — read before debugging any login or connector problem
+On macOS, use `cdesk create <name>` to build a clone before running it. `cdesk apply` rebuilds instances from the config and `cdesk sync` updates closed clones. Refer to `cdesk --help` for the other Desktop commands.
 
-Only one app on the system can own the `claude://` URL scheme, and that is where
-**OAuth and connector callbacks land**. Instances are deliberately built without
-claiming it, so `/Applications/Claude.app` keeps working normally.
+On macOS, `cdesk list` shows the current `claude://` handler. For sign-in or connector setup, use `cdesk claim <name>`, complete the flow in the chosen window and restore the handler with `cdesk claim main`. If device registration requires the official signed app, quit both apps and use `cdesk main <name>`.
 
-If the user says connectors cannot be added, a login never completes, or the
-wrong Claude window pops up after authenticating, check the owner first:
-
-```bash
-cdesk list          # second line prints the current claude:// owner
-```
-
-If it is not `/Applications/Claude.app`, fix it with `cdesk claim main`.
-
-To log an instance in, or add a connector to it, lend the scheme and give it
-straight back:
-
-```bash
-cdesk claim <Name>   # user logs in / adds the connector
-cdesk claim main
-```
-
-Never leave the scheme with an instance.
-
-## "Open the Claude desktop app on your computer first"
-
-If claude.ai (mobile or web) says that while an instance is open, or the log has
-`[device-registry] enclave key unavailable`, the account runs in a clone. Clones
-are signed ad hoc and cannot read the hardware device key, so they never
-register this Mac. Only the account in `/Applications/Claude.app` can:
-
-```bash
-cdesk main <Name>    # both apps quit first; the clone is removed, the profile kept
-```
-
-## Things that will bite you
-
-- **The first login of each instance is manual.** It goes through browser OAuth.
-  Do not try to seed it from `claude-swap`: the Desktop session lives in the
-  profile's Chromium `Cookies`, which is a different auth surface from the OAuth
-  token the CLI stores. Ask the user to log in.
-- **Backups are machine-bound.** The cookies are encrypted with the local
-  `Claude Safe Storage` keychain key, so an archive restored on another Mac will
-  not be logged in. They also contain live session cookies — never commit them
-  or copy them to shared storage.
-- **A removed instance can linger.** `cdesk remove` quits it, drops its Dock
-  tile and unregisters it from LaunchServices — if you delete a bundle by hand
-  instead, the Dock keeps a tile pointing at nothing and LaunchServices may keep
-  it as the preferred `claude://` handler. `cdesk claim main` resets that.
-- **`cdesk sync` skips running instances.** It updates Claude.app, but an open
-  instance keeps its version (and its own updater keeps failing) until you quit
-  it; the hourly LaunchAgent run rebuilds it then.
-- **Instances are ad-hoc signed** and therefore not notarized. macOS asks once
-  for the `Claude Safe Storage` keychain item at first login; that prompt is
-  expected, not a failure.
-- **The LaunchAgent fails quietly.** If instances stop updating, read the exit
-  code rather than guessing:
-
-  ```bash
-  launchctl print "gui/$(id -u)/io.cdesk.cdesk-sync" | grep "last exit code"
-  ```
-
-  Non-zero means the sync is broken; `~/Library/Logs/cdesk-sync.log` says why.
-
-## Claude Code, not Desktop
-
-If the user means the **CLI**, this is the wrong tool: `claude-swap` already
-solves it with `cswap run <n>`, which isolates a terminal via
-`CLAUDE_CONFIG_DIR`. `cdesk` is only for the Desktop app.
+Desktop backups on macOS include session cookies tied to the local Keychain. Keep them private. Use `cdesk remove <name>` to keep the profile data or add `--purge` only when the request includes deleting the login and history.

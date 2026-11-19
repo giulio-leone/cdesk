@@ -18,7 +18,8 @@ set -euo pipefail
 SRC="${CLAUDE_APP:-/Applications/Claude.app}"
 PROFILES="${CDESK_PROFILES:-$HOME/.claude-desktop-profiles}"
 APPS="$HOME/Applications"
-AGENT="$HOME/Library/LaunchAgents/io.cdesk.cdesk-sync.plist"
+AGENT_LABEL=io.cdesk.cdesk-sync
+AGENT="$HOME/Library/LaunchAgents/$AGENT_LABEL.plist"
 STATE="$PROFILES/.state"
 MAIN_DATA="$HOME/Library/Application Support/Claude"
 CONFIG="${CDESK_CONFIG:-$HOME/.config/cdesk/instances.conf}"
@@ -32,6 +33,10 @@ usage() {
   cat <<'EOF'
 usage: cdesk <command> [args]
 
+  cdesk cli <profile> [args] run Claude Code with its own configuration and login
+  cdesk cli --list          list Claude Code profiles
+
+macOS Desktop commands:
   cdesk create <name> [#hex]   build "Claude <name>.app" with a tinted icon
   cdesk apply                  build everything listed in the config
   cdesk run <name>             launch it
@@ -602,41 +607,53 @@ cmd_main() {
 }
 
 cmd_autosync() {
+  local domain="gui/$(id -u)" file executable
+  case "${1:-}" in
+    on|off) ;;
+    *) echo "usage: cdesk autosync on|off" >&2; return 1 ;;
+  esac
+
+  # Find previously installed jobs by their command so upgrades can retire an
+  # older label without keeping the old label in the distributed source.
+  for file in "$(dirname "$AGENT")"/*.cdesk-sync.plist; do
+    [ -f "$file" ] || continue
+    executable="$(plutil -extract ProgramArguments.0 raw -o - "$file" 2>/dev/null)" || continue
+    [ "${executable##*/}" = cdesk ] || continue
+    [ "$(plutil -extract ProgramArguments.1 raw -o - "$file" 2>/dev/null)" = sync ] || continue
+    launchctl bootout "$domain" "$file" 2>/dev/null || true
+    rm -f "$file"
+  done
+
   case "${1:-}" in
     on)
       mkdir -p "$(dirname "$AGENT")"
-      cat > "$AGENT" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>io.cdesk.cdesk-sync</string>
-  <key>ProgramArguments</key>
-  <array><string>$HOME/.local/bin/cdesk</string><string>sync</string></array>
-  <key>WatchPaths</key>
-  <array><string>$SRC/Contents/Info.plist</string></array>
-  <key>StartInterval</key><integer>3600</integer>
-  <key>RunAtLoad</key><true/>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>PATH</key>
-    <string>$HOME/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
-  </dict>
-  <key>StandardOutPath</key><string>$HOME/Library/Logs/cdesk-sync.log</string>
-  <key>StandardErrorPath</key><string>$HOME/Library/Logs/cdesk-sync.log</string>
-</dict>
-</plist>
-EOF
-      launchctl bootout "gui/$(id -u)/io.cdesk.cdesk-sync" 2>/dev/null || true
-      launchctl bootstrap "gui/$(id -u)" "$AGENT"
+      python3 - "$AGENT" "$AGENT_LABEL" "$(script_path)" "$SRC" "$HOME" <<'PY'
+import os
+import plistlib
+import sys
+
+path, label, script, app, home = sys.argv[1:]
+log = os.path.join(home, 'Library/Logs/cdesk-sync.log')
+with open(path, 'wb') as f:
+    plistlib.dump({
+        'Label': label,
+        'ProgramArguments': [script, 'sync'],
+        'WatchPaths': [os.path.join(app, 'Contents/Info.plist')],
+        'StartInterval': 3600,
+        'RunAtLoad': True,
+        'EnvironmentVariables': {
+            'PATH': f'{home}/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin',
+        },
+        'StandardOutPath': log,
+        'StandardErrorPath': log,
+    }, f)
+PY
+      launchctl bootstrap "$domain" "$AGENT"
       echo "autosync on (log: ~/Library/Logs/cdesk-sync.log)"
       ;;
     off)
-      launchctl bootout "gui/$(id -u)/io.cdesk.cdesk-sync" 2>/dev/null || true
-      rm -f "$AGENT"
       echo "autosync off"
       ;;
-    *) echo "usage: cdesk autosync on|off" >&2; exit 1 ;;
   esac
 }
 
@@ -687,6 +704,21 @@ cmd_remove() {
     echo "removed '$name' (profile kept at $PROFILES/$slug)"
   fi
 }
+
+script_path() {
+  local script="${BASH_SOURCE[0]}" dir
+  while [ -L "$script" ]; do
+    dir="$(cd "$(dirname "$script")" && pwd -P)"
+    script="$(readlink "$script")"
+    case "$script" in /*) ;; *) script="$dir/$script" ;; esac
+  done
+  printf '%s/%s\n' "$(cd "$(dirname "$script")" && pwd -P)" "$(basename "$script")"
+}
+
+if [ "${1:-}" = cli ] || [ "$(uname -s)" != Darwin ]; then
+  command -v node >/dev/null || { echo 'cdesk: install Node.js to use this command' >&2; exit 127; }
+  exec node "$(dirname "$(script_path)")/cdesk.js" "$@"
+fi
 
 [ $# -ge 1 ] || { usage; exit 1; }
 case "$1" in

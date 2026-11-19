@@ -1,0 +1,10 @@
+{
+  "name": "cdesk",
+  "version": "1.2.0",
+  "private": true,
+  "description": "Named profiles for Claude Code and Claude Desktop",
+  "license": "MIT",
+  "engines": { "node": ">=22" },
+  "bin": { "cdesk": "bin/cdesk.js" },
+  "files": ["bin"]
+}

@@ -1,15 +1,14 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "cdesk",
-  "description": "Side-by-side Claude Desktop instances on macOS, one account each.",
+  "description": "Named profiles for Claude Code and Claude Desktop.",
   "owner": {
-    "name": "cdesk contributors",
-    "url": "https://example.invalid"
+    "name": "cdesk contributors"
   },
   "plugins": [
     {
       "name": "cdesk",
-      "description": "Create, update and troubleshoot per-account Claude Desktop instances with the cdesk CLI.",
+      "description": "Run Claude Code with isolated profiles and manage Claude Desktop instances.",
       "source": "./",
       "category": "productivity"
     }
