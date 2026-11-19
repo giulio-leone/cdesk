@@ -1,14 +1,14 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "cdesk",
-  "description": "Named profiles for Claude Code and Claude Desktop.",
+  "description": "Named profiles for Claude Code, Codex CLI and Claude Desktop.",
   "owner": {
     "name": "cdesk contributors"
   },
   "plugins": [
     {
       "name": "cdesk",
-      "description": "Run Claude Code with isolated profiles and manage Claude Desktop instances.",
+      "description": "Configure named terminal profiles and gateways, and manage Claude Desktop instances.",
       "source": "./",
       "category": "productivity"
     }

@@ -1,15 +1,28 @@
 ---
 name: cdesk
-description: Use named Claude Code terminal profiles, or create, launch, update or troubleshoot isolated Claude Desktop profiles managed by cdesk.
+description: Install and configure cdesk, create named Claude Code or Codex CLI profiles, connect a terminal profile to an LLM gateway, or manage isolated Claude Desktop instances.
 ---
 
 # cdesk
 
-Determine whether the request concerns Claude Code in the terminal or the Claude Desktop app. They store sessions separately.
+Identify the client and the profile name from the request. Claude Code, Codex CLI and Claude Desktop keep their local state in separate directories.
 
-## Claude Code on macOS, Windows and Linux
+## Install and set up a profile
 
-Run `cdesk cli --list` to show named profiles. Use `cdesk cli <profile> auth status` to check the selected account and `cdesk cli <profile> auth login` to start sign-in. For other work, pass Claude Code arguments after the profile name. Credentials configured explicitly in the shell still apply to the child process.
+1. Check `cdesk --help` and the selected client’s `--version`. If `cdesk` is missing, install it with `npm install -g cdesk-profiles`. For a source checkout or a supplied npm tarball, install from that source instead. The terminal launchers require Node.js 22 or newer.
+2. Use the commands below inside the selected profile. The first launch creates its directory. Guide the user through any browser sign-in that the native client opens.
+3. Check the profile's login status and list profiles again. For gateway profiles, use the verification step in the [gateway guide](references/gateways.md).
+
+| Client | List | Sign in | Verify |
+| --- | --- | --- | --- |
+| Claude Code | `cdesk cli --list` | `cdesk cli <profile> auth login` | `cdesk cli <profile> auth status` |
+| Codex CLI | `cdesk codex --list` | `cdesk codex <profile> login` | `cdesk codex <profile> login status` |
+
+Launch with `cdesk cli <profile>` or `cdesk codex <profile>`. Additional arguments go to the selected client. Auth and provider variables from the shell still apply to that process.
+
+## Configure a gateway
+
+Identify whether the gateway uses Claude apps gateway sign-in, Anthropic Messages or OpenAI Responses. Follow the [gateway guide](references/gateways.md) to merge settings into the selected profile. Read or report only the fields needed for setup and keep credential values in the user's native sign-in flow or secret store.
 
 ## Claude Desktop
 
